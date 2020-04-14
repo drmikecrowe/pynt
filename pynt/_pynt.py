@@ -12,22 +12,24 @@ import re
 import imp
 import sys
 from pynt import __version__
+import textwrap
 
 _CREDIT_LINE = "Powered by pynt %s - A Lightweight Python Build Tool." % __version__
 _LOGGING_FORMAT = "[ %(name)s - %(message)s ]"
 _TASK_PATTERN = re.compile("^([^\[]+)(\[([^\]]*)\])?$")
+_MARKDOWN_DEFAULT = "\n---\n## {0:<%s} {1: ^10}\n\n`{2}`\n\n{3}\n"
 #"^([^\[]+)(\[([^\],=]*(,[^\],=]+)*(,[^\],=]+=[^\],=]+)*)\])?$"
 def build(args):
     """
     Build the specified module with specified arguments.
-    
+
     @type module: module
     @type args: list of arguments
     """
     # Build the command line.
     parser = _create_parser()
 
-    #No args passed. 
+    #No args passed.
     #if not args: #todo: execute default task.
     #    parser.print_help()
     #    print("\n\n"+_CREDIT_LINE)
@@ -38,66 +40,73 @@ def build(args):
     if args.version:
         print('pynt %s' % __version__)
         sys.exit(0)
-        
+
     #load build file as a module
-    module = _load_buildscript(args.file)
-    
+    if not path.isfile(args.file):
+        print("Build file '%s' does not exist. Please specify a build file\n" % args.file)
+        parser.print_help()
+        sys.exit(1)
+
+    module = imp.load_source(path.splitext(path.basename(args.file))[0], args.file)
+
     # Run task and all its dependencies.
     if args.list_tasks:
-        print_tasks(module, args.file)
+        print_tasks(module, args.file, args)
     elif not args.tasks:
         if not _run_default_task(module):
             parser.print_help()
+            print("Markdown format template: " + _MARKDOWN_DEFAULT)
             print("\n")
-            print_tasks(module,  args.file)
+            print_tasks(module,  args.file, args)
     else:
         _run_from_task_names(module,args.tasks)
 
-def print_tasks(module, file):
+def print_tasks(module, file, args):
     # Get all tasks.
     tasks = _get_tasks(module)
-    
+
     # Build task_list to describe the tasks.
     task_list = "Tasks in build file %s:" % file
     name_width = _get_max_name_length(module)+4
-    task_help_format = "\n  {0:<%s} {1: ^10} {2}" % name_width
+    if args.markdown:
+        task_help_format = args.detail % name_width
+    else:
+        task_help_format = "\n  {0:<%s} {1: ^10} {2}" % name_width
     default = _get_default_task(module)
     for task in sorted(tasks, key=lambda task: task.name):
         attributes = []
+        lines = task.doc.split("\n", 1)
+        if len(lines) > 1:
+            summary = lines[0].strip()
+            detailed = textwrap.dedent(lines[1].strip())
+        else:
+            summary = task.doc.strip()
+            detailed = ""
         if task.ignored:
             attributes.append('Ignored')
         if default and task.name == default.name:
             attributes.append('Default')
-    
-        task_list += task_help_format.format(task.name,
-                                            ('[' + ', '.join(attributes) + ']')
-                                             if attributes else '', 
-                                             task.doc)
+        doc_strings = task.doc.strip().split("\n", 2)
+        if len(doc_strings) == 1:
+            doc_strings.append("")
+        if args.markdown:
+            task_list += task_help_format.format(task.name,
+                                                ('`[' + ', '.join(attributes) + ']`')
+                                                if attributes else '',
+                                                summary, detailed)
+        else:
+            task_list += task_help_format.format(task.name,
+                                                ('[' + ', '.join(attributes) + ']')
+                                                if attributes else '',
+                                                summary)
     print(task_list + "\n\n"+_CREDIT_LINE)
-
-def _load_buildscript(file_path):
-    if not path.isfile(file_path):
-        print("Build file '%s' does not exist. Please specify a build file\n" % file_path) 
-        parser.print_help()
-        sys.exit(1)
-
-    script_dir, script_base = path.split(file_path)
-
-    # Append directory of build script to path, to allow importing modules relatively to the script
-    sys.path.append(path.abspath(script_dir))
-
-    module_name, suffix = path.splitext(script_base)
-    description = (suffix, 'r', imp.PY_SOURCE)
-
-    with open(file_path, 'r') as script_file:
-        return imp.load_module(module_name, script_file, file_path, description)
 
 def _get_default_task(module):
     matching_tasks = [task for name,task in inspect.getmembers(module,Task.is_task)
                       if name == "__DEFAULT__"]
     if matching_tasks:
         return matching_tasks[0]
-    
+
 def _run_default_task(module):
     default_task = _get_default_task(module)
     if not default_task:
@@ -126,15 +135,15 @@ def _get_task(module, name, tasks):
     if not match:
         raise Exception("Invalid task argument %s" % name)
     task_name, _, args_str = match.groups()
-    
+
     args, kwargs= _parse_args(args_str)
     if hasattr(module, task_name):
         return getattr(module, task_name), args, kwargs
     matching_tasks = [task for task in tasks if task.name.startswith(task_name)]
-        
+
     if not matching_tasks:
         raise Exception("Invalid task '%s'. Task should be one of %s" %
-                        (name, 
+                        (name,
                          ', '.join([task.name for task in tasks])))
     if len(matching_tasks) == 1:
         return matching_tasks[0], args, kwargs
@@ -161,7 +170,7 @@ def _parse_args(args_str):
                                 % (part, arg_parts[i - 1]))
             args.append(part.strip())
     return args, kwargs
-    
+
 def _run(module, logger, task, completed_tasks, from_command_line = False, args = None, kwargs = None):
     """
     @type module: module
@@ -180,9 +189,9 @@ def _run(module, logger, task, completed_tasks, from_command_line = False, args 
     if from_command_line or task not in completed_tasks:
 
         if task.ignored:
-        
+
             logger.info("Ignoring task \"%s\"" % task.name)
-            
+
         else:
 
             logger.info("Starting task \"%s\"" % task.name)
@@ -194,11 +203,11 @@ def _run(module, logger, task, completed_tasks, from_command_line = False, args 
                 logger.critical("Error in task \"%s\"" % task.name)
                 logger.critical("Aborting build")
                 raise
-            
+
             logger.info("Completed task \"%s\"" % task.name)
-        
+
         completed_tasks.add(task)
-    
+
     return completed_tasks
 
 def _create_parser():
@@ -210,15 +219,22 @@ def _create_parser():
                         metavar="task", nargs = '*')
     parser.add_argument('-l', '--list-tasks', help = "List the tasks",
                         action =  'store_true')
+    parser.add_argument('-m', '--markdown',
+                        help = "List tasks with detailed definitions in markdown format",
+                        action =  'store_true')
     parser.add_argument('-v', '--version',
                         help = "Display the version information",
                         action =  'store_true')
+    parser.add_argument('-d', '--detail',
+                        help = "Set the markdown format string.",
+                        default = _MARKDOWN_DEFAULT
+                        )
     parser.add_argument('-f', '--file',
                         help = "Build file to read the tasks from. 'build.py' is default value assumed if this argument is unspecified",
                         metavar = "file", default =  "build.py")
-    
+
     return parser
-        
+
 # Abbreviate for convenience.
 #task = _TaskDecorator
 def task(*dependencies, **options):
@@ -238,7 +254,7 @@ def task(*dependencies, **options):
     return decorator
 
 class Task(object):
-    
+
     def __init__(self, func, dependencies, options):
         """
         @type func: 0-ary function
@@ -252,35 +268,35 @@ class Task(object):
 
     def show(self):
         return not self.name.startswith("_")
-    
+
     def __call__(self,*args,**kwargs):
         self.func.__call__(*args,**kwargs)
-    
+
     @classmethod
     def is_task(cls,obj):
         """
         Returns true is an object is a build task.
         """
         return isinstance(obj,cls)
-    
+
 def _get_tasks(module):
     """
     Returns all functions marked as tasks.
-    
+
     @type module: module
     """
     # Get all functions that are marked as task and pull out the task object
     # from each (name,value) pair.
     return set(member[1] for member in inspect.getmembers(module,Task.is_task) if member[1].show())
-    
+
 def _get_max_name_length(module):
     """
     Returns the length of the longest task name.
-    
+
     @type module: module
     """
     return max([len(task.name) for task in _get_tasks(module)])
-    
+
 def _get_logger(module):
     """
     @type module: module
