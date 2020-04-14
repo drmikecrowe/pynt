@@ -55,7 +55,7 @@ def build(args):
     elif not args.tasks:
         if not _run_default_task(module):
             parser.print_help()
-            print("Markdown format template: " + _MARKDOWN_DEFAULT)
+            print("Markdown format template: " + repr(_MARKDOWN_DEFAULT))
             print("\n")
             print_tasks(module,  args.file, args)
     else:
